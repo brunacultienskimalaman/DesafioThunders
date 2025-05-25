@@ -1,5 +1,4 @@
-﻿// Controllers/UtilizacaoController.cs
-using FluentValidation;
+﻿using FluentValidation;
 using Microsoft.AspNetCore.Mvc;
 using System.Diagnostics;
 using Thunders.TechTest.ApiService.Dtos.Utilizacao;
@@ -28,7 +27,8 @@ public class UtilizacaoController : ControllerBase
         _logger = logger;
     }
 
-    [HttpGet("ultimas")]
+   
+    [HttpGet("recupera-utilizacoes")]
     public async Task<IActionResult> ObterUltimasUtilizacoes()
     {
         var stopwatch = Stopwatch.StartNew();
@@ -59,18 +59,15 @@ public class UtilizacaoController : ControllerBase
             });
         }
     }
-
-    /// <summary>
-    /// Recebe uma única utilização de pedágio
-    /// </summary>
-    [HttpPost("single")]
-    public async Task<IActionResult> ReceberUtilizacao([FromBody] UtilizacaoDto utilizacao)
+        
+    [HttpPost("Insere-utilizacao")]
+    public async Task<IActionResult> ReceberUtilizacaoAsync([FromBody] UtilizacaoDto utilizacao)
     {
         var stopwatch = Stopwatch.StartNew();
+        var messageId = Guid.NewGuid();
 
         try
         {
-            // Validação
             var validationResult = await _utilizacaoValidator.ValidateAsync(utilizacao);
             if (!validationResult.IsValid)
             {
@@ -86,27 +83,30 @@ public class UtilizacaoController : ControllerBase
                 });
             }
 
-            // Processa a utilização
-            var resultado = await _utilizacaoService.ProcessarUtilizacaoAsync(utilizacao);
+            var resultado = await _utilizacaoService.ProcessarUtilizacaoViaRebus(utilizacao);
 
             stopwatch.Stop();
-            _logger.LogInformation("Utilização única processada em {ElapsedMs}ms", stopwatch.ElapsedMilliseconds);
+            _logger.LogInformation("Utilização enviada para processamento assíncrono. MessageId: {MessageId}, Tempo: {ElapsedMs}ms",
+                messageId, stopwatch.ElapsedMilliseconds);
 
-            return Ok(new
+            return Accepted(new
             {
                 Success = true,
-                Message = "Utilização recebida com sucesso",
+                Message = "Utilização enviada para processamento assíncrono",
                 Data = new
                 {
-                    Id = resultado.Id,
-                    DataProcessamento = resultado.DataProcessamento,
-                    TempoProcessamento = $"{stopwatch.ElapsedMilliseconds}ms"
+                    MessageId = messageId,
+                    Status = "Aceito",
+                    DataEnvio = DateTime.UtcNow,
+                    EstimativaProcessamento = "1-3 segundos",
+                    TipoProcessamento = "Assíncrono",
+                    TempoEnvio = $"{stopwatch.ElapsedMilliseconds}ms"
                 }
             });
         }
         catch (ArgumentException ex)
         {
-            _logger.LogWarning(ex, "Erro de validação ao processar utilização única");
+            _logger.LogWarning(ex, "Erro de validação ao processar utilização assíncrona");
             return BadRequest(new
             {
                 Success = false,
@@ -116,7 +116,7 @@ public class UtilizacaoController : ControllerBase
         catch (Exception ex)
         {
             stopwatch.Stop();
-            _logger.LogError(ex, "Erro interno ao processar utilização única");
+            _logger.LogError(ex, "Erro interno ao processar utilização assíncrona");
             return StatusCode(500, new
             {
                 Success = false,
@@ -126,17 +126,15 @@ public class UtilizacaoController : ControllerBase
         }
     }
 
-    /// <summary>
-    /// Recebe um lote de utilizações de pedágio
-    /// </summary>
-    [HttpPost("batch")]
-    public async Task<IActionResult> ReceberUtilizacoesBatch([FromBody] UtilizacaoLoteDto lote)
+    
+    [HttpPost("Insere-lote")]
+    public async Task<IActionResult> ReceberUtilizacoesLoteAsync([FromBody] UtilizacaoLoteDto lote)
     {
         var stopwatch = Stopwatch.StartNew();
+        var messageId = Guid.NewGuid();
 
         try
         {
-            // Validação do lote
             var validationResult = await _loteValidator.ValidateAsync(lote);
             if (!validationResult.IsValid)
             {
@@ -152,30 +150,31 @@ public class UtilizacaoController : ControllerBase
                 });
             }
 
-            // Processa o lote
-            var resultado = await _utilizacaoService.ProcessarUtilizacoesLoteAsync(lote);
+            var resultado = await _utilizacaoService.ProcessarLoteViaRebus(lote);
 
             stopwatch.Stop();
-            _logger.LogInformation("Lote de {Count} utilizações processado em {ElapsedMs}ms",
-                lote.Utilizacoes.Count, stopwatch.ElapsedMilliseconds);
+            _logger.LogInformation("Lote de {Count} utilizações enviado para processamento assíncrono. MessageId: {MessageId}, Tempo: {ElapsedMs}ms",
+                lote.Utilizacoes.Count, messageId, stopwatch.ElapsedMilliseconds);
 
-            return Ok(new
+            return Accepted(new
             {
                 Success = true,
-                Message = $"Lote de {lote.Utilizacoes.Count} utilizações recebido com sucesso",
+                Message = $"Lote de {lote.Utilizacoes.Count} utilizações enviado para processamento assíncrono",
                 Data = new
                 {
-                    LoteId = resultado.LoteId,
-                    TotalUtilizacoes = resultado.TotalProcessadas,
-                    UtilizacoesComErro = resultado.TotalComErro,
-                    DataProcessamento = resultado.DataProcessamento,
-                    TempoProcessamento = $"{stopwatch.ElapsedMilliseconds}ms"
+                    MessageId = messageId,
+                    Status = "Aceito",
+                    DataEnvio = DateTime.UtcNow,
+                    TotalUtilizacoes = lote.Utilizacoes.Count,
+                    EstimativaProcessamento = $"{Math.Ceiling(lote.Utilizacoes.Count / 100.0)} segundos",
+                    TipoProcessamento = "Assíncrono Lote",
+                    TempoEnvio = $"{stopwatch.ElapsedMilliseconds}ms"
                 }
             });
         }
         catch (ArgumentException ex)
         {
-            _logger.LogWarning(ex, "Erro de validação ao processar lote de utilizações");
+            _logger.LogWarning(ex, "Erro de validação ao processar lote assíncrono");
             return BadRequest(new
             {
                 Success = false,
@@ -185,7 +184,7 @@ public class UtilizacaoController : ControllerBase
         catch (Exception ex)
         {
             stopwatch.Stop();
-            _logger.LogError(ex, "Erro interno ao processar lote de utilizações");
+            _logger.LogError(ex, "Erro interno ao processar lote assíncrono");
             return StatusCode(500, new
             {
                 Success = false,
@@ -194,31 +193,5 @@ public class UtilizacaoController : ControllerBase
             });
         }
     }
-
-    /// <summary>
-    /// Consulta estatísticas de processamento
-    /// </summary>
-    [HttpGet("stats")]
-    public async Task<IActionResult> ObterEstatisticas()
-    {
-        try
-        {
-            var stats = await _utilizacaoService.ObterEstatisticasAsync();
-
-            return Ok(new
-            {
-                Success = true,
-                Data = stats
-            });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Erro ao obter estatísticas");
-            return StatusCode(500, new
-            {
-                Success = false,
-                Message = "Erro interno do servidor"
-            });
-        }
-    }
+      
 }

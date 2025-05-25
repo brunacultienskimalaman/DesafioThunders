@@ -9,9 +9,13 @@ using Thunders.TechTest.ApiService;
 using Thunders.TechTest.ApiService.Data;
 using Thunders.TechTest.ApiService.Services;
 using Thunders.TechTest.OutOfBox.Database;
+using Rebus.Config;
+using Rebus.Routing.TypeBased;
+using Rebus.Serialization.Json;
+using Thunders.TechTest.ApiService.Messages;
+using Thunders.TechTest.ApiService.Handlers;
 
 var builder = WebApplication.CreateBuilder(args);
-
 builder.AddServiceDefaults();
 
 // Fixando portas da api
@@ -39,9 +43,24 @@ builder.Services.AddSwaggerGen(c =>
     });
 });
 
-// FluentValidation
 builder.Services.AddValidatorsFromAssembly(Assembly.GetExecutingAssembly());
 
+var rabbitMqConnectionString = builder.Configuration.GetConnectionString("rabbitmq") ?? "amqp://guest:guest@localhost:5672";
+
+builder.Services.AddRebus(configure => configure
+    .Logging(l => l.Serilog())
+    .Transport(t => t.UseRabbitMq(rabbitMqConnectionString, "utilizacao_queue"))
+    .Routing(r => r.TypeBased()
+        .Map<UtilizacaoMessage>("utilizacao_queue")
+        .Map<UtilizacaoProcessadaMessage>("utilizacao_resposta_queue"))
+    .Options(o => {
+        o.SetNumberOfWorkers(Environment.ProcessorCount);
+        o.SetMaxParallelism(5);
+    })
+    .Serialization(s => s.UseNewtonsoftJson())
+);
+
+builder.Services.AutoRegisterHandlersFromAssemblyOf<UtilizacaoMessageHandler>();
 
 builder.Services.AddScoped<IUtilizacaoService, UtilizacaoService>();
 builder.Services.AddScoped<IPracaService, PracaService>();
@@ -66,7 +85,6 @@ builder.Services.AddRateLimiter(options =>
             }));
 });
 
-
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowAll", policy =>
@@ -76,7 +94,6 @@ builder.Services.AddCors(options =>
               .AllowAnyHeader();
     });
 });
-
 
 builder.Services.AddOpenTelemetry()
     .WithTracing(tracing =>
@@ -88,7 +105,6 @@ builder.Services.AddOpenTelemetry()
 var app = builder.Build();
 
 //Precisei adicionar isso aqui para forcar as migrações, não estavam funcionando 
-//chamando via console externo
 using (var scope = app.Services.CreateScope())
 {
     var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -96,7 +112,6 @@ using (var scope = app.Services.CreateScope())
 }
 
 app.UseExceptionHandler();
-
 
 if (app.Environment.IsDevelopment())
 {
@@ -118,7 +133,6 @@ app.Use(async (context, next) =>
     var stopwatch = System.Diagnostics.Stopwatch.StartNew();
     await next();
     stopwatch.Stop();
-
     if (stopwatch.ElapsedMilliseconds > 5000)
     {
         var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
@@ -131,6 +145,3 @@ app.MapDefaultEndpoints();
 app.MapControllers();
 
 app.Run();
-
-
-

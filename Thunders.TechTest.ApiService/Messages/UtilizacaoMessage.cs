@@ -2,7 +2,7 @@
 
 namespace Thunders.TechTest.ApiService.Messages
 {
-    public class UtilizacaoMessage 
+    public class UtilizacaoMessage
     {
         public Guid Id { get; set; } = Guid.NewGuid();
         public DateTime Timestamp { get; set; } = DateTime.Now;

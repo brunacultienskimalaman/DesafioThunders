@@ -1,6 +1,6 @@
 ﻿namespace Thunders.TechTest.ApiService.Messages
 {
-    public class LoteResultado
+    public class UtilizacaoProcessadaMessage
     {
         public Guid LoteId { get; set; }
         public int TotalProcessadas { get; set; }
