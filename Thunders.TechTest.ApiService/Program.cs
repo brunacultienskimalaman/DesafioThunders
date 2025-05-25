@@ -1,17 +1,27 @@
+using FluentValidation;
 using Microsoft.EntityFrameworkCore;
+using OpenTelemetry.Trace;
+using System.Reflection;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Threading.RateLimiting;
 using Thunders.TechTest.ApiService;
 using Thunders.TechTest.ApiService.Data;
 using Thunders.TechTest.ApiService.Services;
 using Thunders.TechTest.OutOfBox.Database;
-using Thunders.TechTest.OutOfBox.Queues;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.AddServiceDefaults();
-builder.Services.AddControllers();
 
 // Fixando portas da api
 builder.WebHost.UseUrls("https://localhost:7000", "http://localhost:7001");
+
+var features = Features.BindFromConfiguration(builder.Configuration);
+
+builder.Services.AddControllers();
+builder.Services.AddProblemDetails();
+builder.Services.AddEndpointsApiExplorer();
 
 builder.AddSqlServerDbContext<AppDbContext>("ThundersTechTestDb", configureDbContextOptions: options =>
 {
@@ -29,26 +39,64 @@ builder.Services.AddSwaggerGen(c =>
     });
 });
 
+// FluentValidation
+builder.Services.AddValidatorsFromAssembly(Assembly.GetExecutingAssembly());
+
+
 builder.Services.AddScoped<IUtilizacaoService, UtilizacaoService>();
 builder.Services.AddScoped<IPracaService, PracaService>();
 
-var features = Features.BindFromConfiguration(builder.Configuration);
-
-// Add services to the container.
-builder.Services.AddProblemDetails();
-
-if (features.UseMessageBroker)
+builder.Services.ConfigureHttpJsonOptions(options =>
 {
-    builder.Services.AddBus(builder.Configuration, new SubscriptionBuilder());
-}
+    options.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
+    options.SerializerOptions.WriteIndented = true;
+    options.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
+});
 
-if (features.UseEntityFramework)
+builder.Services.AddRateLimiter(options =>
 {
-    builder.Services.AddSqlServerDbContext<DbContext>(builder.Configuration);
-}
+    options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            partitionKey: context.Request.Headers.Host.ToString(),
+            factory: partition => new FixedWindowRateLimiterOptions
+            {
+                AutoReplenishment = true,
+                PermitLimit = 1000,
+                Window = TimeSpan.FromMinutes(1)
+            }));
+});
 
+
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowAll", policy =>
+    {
+        policy.AllowAnyOrigin()
+              .AllowAnyMethod()
+              .AllowAnyHeader();
+    });
+});
+
+
+builder.Services.AddOpenTelemetry()
+    .WithTracing(tracing =>
+    {
+        tracing.AddAspNetCoreInstrumentation();
+        tracing.AddSource("PedagioSystem");
+    });
 
 var app = builder.Build();
+
+//Precisei adicionar isso aqui para forcar as migrações, não estavam funcionando 
+//chamando via console externo
+using (var scope = app.Services.CreateScope())
+{
+    var context = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    context.Database.Migrate();
+}
+
+app.UseExceptionHandler();
+
 
 if (app.Environment.IsDevelopment())
 {
@@ -61,12 +109,28 @@ if (app.Environment.IsDevelopment())
     app.UseCors("AllowAll");
 }
 
+app.UseHttpsRedirection();
+app.UseRateLimiter();
+app.UseAuthorization();
 
-// Configure the HTTP request pipeline.
-app.UseExceptionHandler();
+app.Use(async (context, next) =>
+{
+    var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+    await next();
+    stopwatch.Stop();
+
+    if (stopwatch.ElapsedMilliseconds > 5000)
+    {
+        var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+        logger.LogWarning("Request lenta: {Method} {Path} - {ElapsedMs}ms",
+            context.Request.Method, context.Request.Path, stopwatch.ElapsedMilliseconds);
+    }
+});
 
 app.MapDefaultEndpoints();
-
 app.MapControllers();
 
 app.Run();
+
+
+

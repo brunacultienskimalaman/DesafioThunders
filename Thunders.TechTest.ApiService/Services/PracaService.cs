@@ -25,6 +25,7 @@ namespace Thunders.TechTest.ApiService.Services
                     .Take(10)
                     .Select(p => new PracaDto
                     {
+                        Id = p.Id,
                         Nome = p.Nome,
                         Cidade = p.Cidade,
                         Estado = p.Estado,
